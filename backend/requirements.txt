@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-multipart
+psycopg[binary]
+pypdf
+python-docx
+numpy
+# Ajoutez ici les bibliothèques dont vous avez besoin pour la partie IA
+# (ex. mistralai, pypdf, ...)

@@ -1,0 +1,51 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16        # PostgreSQL 16 + extension pgvector (stockage de vecteurs)
+    environment:
+      POSTGRES_USER: chatbot
+      POSTGRES_HOST_AUTH_METHOD: trust   # pas de mot de passe (base locale de TP uniquement)
+      POSTGRES_DB: chatbot
+    ports:
+      - "${DB_PORT:-5433}:5432"          # accès depuis votre machine (psql, DBeaver...) ; changez-le s'il est pris
+    volumes:
+      - pgdata:/var/lib/postgresql/data  # les données survivent à `docker compose down`
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chatbot -d chatbot"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    ports:
+      - "${BACKEND_PORT:-8001}:8000"     # port côté machine ; changez-le s'il est déjà utilisé
+    environment:
+      DATABASE_URL: postgresql://chatbot@db:5432/chatbot
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}   # lue dans le fichier .env, disponible via os.environ dans ai.py
+      LLM_CHATBOT: ${LLM_CHATBOT:-mistral-small-latest}       # modèle du chatbot (llm.chat par défaut)
+      LLM_CONTEXT: ${LLM_CONTEXT:-ministral-14b-latest}       # modèle de la contextualisation et des descriptions
+      AUTO_CONTEXTUALIZE: ${AUTO_CONTEXTUALIZE:-true}               # contextualisation automatique à l'ajout d'un document
+      AUTO_CONTEXT_MAX_CHUNKS: ${AUTO_CONTEXT_MAX_CHUNKS:-5000}     # garde-fou : documents plus gros ignorés
+      AUTO_CONTEXT_WORKERS: ${AUTO_CONTEXT_WORKERS:-64}             # appels au LLM en parallèle (le débit reste borné par le limiteur ci-dessous)
+      LLM_REQUESTS_PER_MINUTE: ${LLM_REQUESTS_PER_MINUTE:-500}      # limite de requêtes/minute de votre clé Mistral (le backend vise 95 %)
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1024}                         # dimension des vecteurs stockés (mistral-embed : 1024)
+      CONTEXT_NEIGHBORS: ${CONTEXT_NEIGHBORS:-2}                    # chunks voisins donnés au LLM de chaque côté
+      CONTEXT_SECTION_LEVEL: ${CONTEXT_SECTION_LEVEL:-3}            # niveau de titre Markdown = « chapitre »
+    volumes:
+      - ./backend:/app                   # rechargement automatique quand on modifie le code
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
