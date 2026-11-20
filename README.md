@@ -1,4 +1,4 @@
-# TP 2 — Chatbot
+# TP Chatbot
 
 Une interface (React), une API (FastAPI) et une base de données (PostgreSQL) vous sont **fournies**.
 Votre travail : la **partie IA**.
