@@ -62,7 +62,7 @@ Puis ouvrir <http://localhost:5180> :
 La documentation de l'API est sur <http://localhost:8010/docs>.
 
 Le code est monté en volume : toute modification de `backend/ai.py` est prise en compte automatiquement.
-Pour installer une bibliothèque Python, ajoutez-la dans `backend/requirements.txt` puis relancez
+Le SDK `mistralai` est déjà installé (facultatif : `llm.chat` suffit). Pour installer une autre bibliothèque Python, ajoutez-la dans `backend/requirements.txt` puis relancez
 `docker compose up --build`.
 
 > **Un problème ?** Les logs : `docker compose logs -f backend`. Repartir de zéro : `docker compose down -v`.

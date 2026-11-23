@@ -55,24 +55,36 @@ Le travail, dans l'ordre des TODO :
     8. l'agent : tool calling (agent_tools.py).
 Tant que vous n'avez rien codé, le chatbot répond "TEST".
 """
+import json
+import os
+import urllib.request
+
 import numpy as np
 
 import db
 import llm
+import recipes
 import vectorstore
 from db import EMBEDDING_DIM        # dimension des vecteurs stockés : 1024 (mistral-embed)
+
+SYSTEM_PROMPT = ("Tu es un assistant culinaire bienveillant. Réponds toujours en français, de façon claire et concise. "
+                 "Si tu ne sais pas, dis-le plutôt que d'inventer.")
 
 
 # ---------------------------------------------------------------------------------------------- Génération
 def generate_reply(messages: list[dict], documents: list[dict]) -> str:
     question = messages[-1]["content"]
 
-    # TODO 1 - Chatbot classique : appeler le LLM avec llm.chat(...) en lui donnant un message « system » (consignes :
-    #          rôle, langue française, ton...) puis tout l'historique `messages`, et renvoyer sa réponse.
-    #          Testez : il répond, mais que sait-il des documents chargés ?
-
     # Récupération (RAG) : déjà câblée ; elle renvoie [] tant que les fonctions des TODO 2 à 6 ne sont pas codées.
     chunks = rerank(question, fuse(vector_search(question), keyword_search(question)))
+
+    # Étape 1 - Chatbot classique : consignes (message « system ») + tout l'historique.
+    history = [{"role": m["role"], "content": m["content"]} for m in messages]
+    try:
+        return llm.chat([{"role": "system", "content": SYSTEM_PROMPT}] + history,
+                        max_tokens=700, temperature=0.3)["content"]
+    except llm.LLMError as e:
+        return f"Erreur : {e}"
 
     # TODO 7 - RAG : mettre les chunks retenus dans le prompt, demander au modèle de répondre en français à partir de ces
     #          passages uniquement et de citer ses sources (nom de la recette, article...).
@@ -98,19 +110,20 @@ def embed(text: str) -> np.ndarray:
     Sert à vectoriser les chunks (texte contextualisé) ET les questions des utilisateurs : les deux doivent
     être calculés avec le même modèle, sinon les distances n'ont aucun sens.
     """
-    # TODO 2 : appeler l'API d'embeddings de Mistral (modèle `mistral-embed`, POST https://api.mistral.ai/v1/embeddings,
-    #        dimension 1024) et renvoyer le vecteur obtenu. Clé : os.environ["MISTRAL_API_KEY"].
-    #
-    #        Cette fonction est appelée AUTOMATIQUEMENT (embedding.py), en parallèle, pour chaque chunk :
-    #          - à l'ajout d'un document, une fois les contextes générés ;
-    #          - au redémarrage du serveur, pour les chunks encore factices (le serveur redémarre quand vous
-    #            enregistrez ce fichier : vos embeddings sont donc calculés dès que embed() fonctionne) ;
-    #          - avec le bouton « Calculer les embeddings » de la fenêtre d'un document.
-    #        Elle doit donc être sûre en parallèle et respecter la limite de requêtes par minute (llm.limiter.acquire()).
-    #        Les erreurs s'affichent dans `docker compose logs backend`.
-    #
-    #        Réfléchissez : pour une recette, que vaut-il mieux vectoriser (la description ? la recette entière ?).
-    return np.ones(EMBEDDING_DIM)       # vecteur factice, à remplacer
+    # Pour une recette, on vectorise titre + description (courts, proches des mots d'un utilisateur) plutôt que
+    # la recette entière (ingrédients, quantités, étapes : beaucoup de bruit).
+    recipe = recipes.parse_recipe(text)
+    if recipe and recipe["description"]:
+        text = f"{recipe['title']}. {recipe['description']}"
+
+    request = urllib.request.Request(
+        "https://api.mistral.ai/v1/embeddings",
+        data=json.dumps({"model": "mistral-embed", "input": [text[:8000]]}).encode(),
+        headers={"Authorization": f"Bearer {os.environ['MISTRAL_API_KEY']}", "Content-Type": "application/json"})
+    llm.limiter.acquire()                          # respecte la limite de requêtes par minute (appels en parallèle)
+    with urllib.request.urlopen(request, timeout=60) as response:
+        data = json.load(response)
+    return np.asarray(data["data"][0]["embedding"], dtype=float)
 
 
 # ---------------------------------------------------------------------------------------------- Recherche
@@ -120,10 +133,16 @@ def vector_search(query: str, k: int = 20) -> list[dict]:
     Renvoie une liste triée du plus au moins proche de dicts
     {"document_id", "source", "chunk_index", "content"} (même forme que vectorstore.get_chunks).
     """
-    # TODO 3 : vecteur de la question avec embed(), puis requête SQL pgvector (db.connect()) sur chunk_embeddings,
-    #          triée par distance cosinus (opérateur `<=>`) ; voir « Stockage vectoriel » dans le README.
-    #          Pensez à écarter les chunks encore factices (embedding <> vecteur de 1).
-    return []
+    literal = vectorstore.to_literal(embed(query))
+    with db.connect() as conn:
+        return conn.execute(
+            f"""SELECT e.document_id, d.name AS source, e.chunk_index, e.content
+                  FROM chunk_embeddings e JOIN documents d ON d.id = e.document_id
+                 WHERE e.chunk_size = %s AND e.overlap = %s
+                   AND e.embedding <> array_fill(1::real, ARRAY[{EMBEDDING_DIM}])::vector
+                 ORDER BY e.embedding <=> %s::vector
+                 LIMIT %s""",
+            (vectorstore.CHUNK_SIZE, vectorstore.OVERLAP, literal, k)).fetchall()
 
 
 def keyword_search(query: str, k: int = 20) -> list[dict]:
